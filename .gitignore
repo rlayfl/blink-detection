@@ -1,0 +1,15 @@
+# Ignore virtual environments
+.venv/
+
+# Optional: Ignore VS Code settings (if you're not sharing workspace config)
+.vscode/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Environment files (optional)
+.env
+*.env
