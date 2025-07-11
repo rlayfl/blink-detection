@@ -2,6 +2,8 @@ import cv2
 import dlib
 from scipy.spatial import distance
 import imutils
+import time
+import json
 
 # Eye Aspect Ratio function
 def eye_aspect_ratio(eye):
@@ -12,7 +14,7 @@ def eye_aspect_ratio(eye):
     return ear
 
 # Constants
-EAR_THRESHOLD = 0.25  # This threshold works well if the eyes are clearly visible
+EAR_THRESHOLD = 0.25
 
 # Initialise dlib's face detector and facial landmark predictor
 detector = dlib.get_frontal_face_detector()
@@ -26,6 +28,7 @@ cap = cv2.VideoCapture(0)
 
 amount_of_blinks = 0
 blinking = False
+blink_log = []
 
 while True:
     ret, frame = cap.read()
@@ -35,6 +38,8 @@ while True:
     frame = imutils.resize(frame, width=450)
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     rects = detector(gray, 0)
+
+    current_time_ms = int(time.time() * 1000)
 
     for rect in rects:
         shape = predictor(gray, rect)
@@ -48,21 +53,36 @@ while True:
 
         ear = (leftEAR + rightEAR) / 2.0
 
-        status = "Eyes Open - Attractiveness 10/10" if ear > EAR_THRESHOLD else "Eyes Closed - Attractiveness 10/10"
-
         if ear < EAR_THRESHOLD:
-            blinking = False
+            blinking = False  # Reset when eyes closed
 
-        if ear > EAR_THRESHOLD and not blinking:            
+        elif ear > EAR_THRESHOLD and not blinking:
+            # Detected a blink
             amount_of_blinks += 1
             print("Blink detected", amount_of_blinks)
             blinking = True
 
+            # Log only blinking entries
+            blink_log.append({
+                "timestamp_ms": current_time_ms,
+                "blinking": True
+            })
+
+        # Display blink status
+        status = "Eyes Open" if ear > EAR_THRESHOLD else "Eyes Closed"
         cv2.putText(frame, status, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
+        # Display current time in ms
+        time_text = f"Time: {current_time_ms} ms"
+        cv2.putText(frame, time_text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+
     cv2.imshow("Frame", frame)
-    if cv2.waitKey(1) == 27:
+    if cv2.waitKey(1) == 27:  # ESC to exit
         break
 
 cap.release()
 cv2.destroyAllWindows()
+
+# Save log
+with open("blink_log.json", "w") as f:
+    json.dump(blink_log, f, indent=2)
