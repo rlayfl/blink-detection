@@ -4,6 +4,12 @@ from scipy.spatial import distance
 import imutils
 import time
 import json
+from datetime import datetime
+
+# Ask user for name
+user_name = input("Enter your name: ").strip().replace(" ", "_")
+session_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+filename = f"{user_name}_{session_timestamp}_blinks.json"
 
 # Eye Aspect Ratio function
 def eye_aspect_ratio(eye):
@@ -54,21 +60,17 @@ while True:
         ear = (leftEAR + rightEAR) / 2.0
 
         if ear < EAR_THRESHOLD:
-            blinking = False  # Reset when eyes closed
+            blinking = False
 
         elif ear > EAR_THRESHOLD and not blinking:
-            # Detected a blink
             amount_of_blinks += 1
             print("Blink detected", amount_of_blinks)
             blinking = True
-
-            # Log only blinking entries
             blink_log.append({
                 "timestamp_ms": current_time_ms,
                 "blinking": True
             })
 
-        # Display blink status
         status = "Eyes Open" if ear > EAR_THRESHOLD else "Eyes Closed"
         cv2.putText(frame, status, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
@@ -83,6 +85,8 @@ while True:
 cap.release()
 cv2.destroyAllWindows()
 
-# Save log
-with open("blink_log.json", "w") as f:
+# Save blink log
+with open(filename, "w") as f:
     json.dump(blink_log, f, indent=2)
+
+print(f"Blink log saved to {filename}")
