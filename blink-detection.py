@@ -9,7 +9,8 @@ from datetime import datetime
 # Ask user for name
 user_name = input("Enter your name: ").strip().replace(" ", "_")
 session_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-filename = f"{user_name}_{session_timestamp}_blinks.json"
+json_filename = f"{user_name}_{session_timestamp}_blinks.json"
+video_filename = f"{user_name}_{session_timestamp}_footage.avi"
 
 # Eye Aspect Ratio function
 def eye_aspect_ratio(eye):
@@ -32,6 +33,15 @@ predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")
 # Start webcam
 cap = cv2.VideoCapture(0)
 
+# Get video properties for writer
+frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+fps = int(cap.get(cv2.CAP_PROP_FPS)) or 24  # fallback to 24 if FPS is 0
+
+# Set up video writer
+fourcc = cv2.VideoWriter_fourcc(*'XVID')
+out = cv2.VideoWriter(video_filename, fourcc, fps, (frame_width, frame_height))
+
 amount_of_blinks = 0
 blinking = False
 blink_log = []
@@ -41,7 +51,6 @@ while True:
     if not ret:
         break
 
-    frame = imutils.resize(frame, width=450)
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     rects = detector(gray, 0)
 
@@ -74,19 +83,25 @@ while True:
         status = "Eyes Open" if ear > EAR_THRESHOLD else "Eyes Closed"
         cv2.putText(frame, status, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
-        # Display current time in ms
         time_text = f"Time: {current_time_ms} ms"
         cv2.putText(frame, time_text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
 
-    cv2.imshow("Frame", frame)
-    if cv2.waitKey(1) == 27:  # ESC to exit
+    # Write the frame to video file
+    out.write(frame)
+
+    # Display the frame
+    cv2.imshow("Frame", imutils.resize(frame, width=450))
+    if cv2.waitKey(1) == 27:  # ESC key
         break
 
+# Cleanup
 cap.release()
+out.release()
 cv2.destroyAllWindows()
 
 # Save blink log
-with open(filename, "w") as f:
+with open(json_filename, "w") as f:
     json.dump(blink_log, f, indent=2)
 
-print(f"Blink log saved to {filename}")
+print(f"Blink log saved to {json_filename}")
+print(f"Webcam footage saved to {video_filename}")
