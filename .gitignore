@@ -1,5 +1,5 @@
 # Ignore virtual environments
-.venv/
+venv/
 
 # Optional: Ignore VS Code settings (if you're not sharing workspace config)
 .vscode/
@@ -14,3 +14,4 @@ __pycache__/
 .env
 *.env
 *.json
+
