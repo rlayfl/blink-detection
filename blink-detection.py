@@ -1,107 +1,192 @@
-import cv2
-import dlib
-from scipy.spatial import distance
-import imutils
+import argparse
 import time
-import json
-from datetime import datetime
+from collections import deque
 
-# Ask user for name
-user_name = input("Enter your name: ").strip().replace(" ", "_")
-session_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-json_filename = f"{user_name}_{session_timestamp}_blinks.json"
-video_filename = f"{user_name}_{session_timestamp}_footage.avi"
+import cv2
+import numpy as np
+import mediapipe as mp
+from mss import mss
 
-# Eye Aspect Ratio function
-def eye_aspect_ratio(eye):
-    A = distance.euclidean(eye[1], eye[5])  # vertical
-    B = distance.euclidean(eye[2], eye[4])  # vertical
-    C = distance.euclidean(eye[0], eye[3])  # horizontal
-    ear = (A + B) / (2.0 * C)
-    return ear
+# ---- Eye landmark indices (MediaPipe Face Mesh, 468-landmark model) ----
+LEFT_EYE = {
+    "h": (33, 133),
+    "v1": (160, 144),
+    "v2": (158, 153),
+}
+RIGHT_EYE = {
+    "h": (263, 362),
+    "v1": (387, 373),
+    "v2": (385, 380),
+}
 
-# Constants
-EAR_THRESHOLD = 0.25
+def euclidean(a, b):
+    return np.linalg.norm(a - b)
 
-# Initialise dlib's face detector and facial landmark predictor
-detector = dlib.get_frontal_face_detector()
-predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")
+def eye_aspect_ratio(landmarks, eye_indices):
+    p_h1, p_h2 = landmarks[eye_indices["h"][0]], landmarks[eye_indices["h"][1]]
+    p_v11, p_v12 = landmarks[eye_indices["v1"][0]], landmarks[eye_indices["v1"][1]]
+    p_v21, p_v22 = landmarks[eye_indices["v2"][0]], landmarks[eye_indices["v2"][1]]
 
-(lStart, lEnd) = (42, 48)  # Left eye landmarks
-(rStart, rEnd) = (36, 42)  # Right eye landmarks
+    horiz = euclidean(p_h1, p_h2)
+    vert = euclidean(p_v11, p_v12) + euclidean(p_v21, p_v22)
+    return (vert / (2.0 * horiz)) if horiz > 1e-6 else 0.0
 
-# Start webcam
-cap = cv2.VideoCapture(0)
+def draw_overlay(frame, fps, ear_l, ear_r, blink_count, state, region_desc):
+    h, w = frame.shape[:2]
+    pad = 10
+    cv2.rectangle(frame, (pad-5, pad-5), (300, 125), (0, 0, 0), -1)
+    cv2.putText(frame, f"FPS: {fps:.1f}", (pad, 20 + pad),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1, cv2.LINE_AA)
+    cv2.putText(frame, f"EAR L: {ear_l:.3f}", (pad, 45 + pad),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1, cv2.LINE_AA)
+    cv2.putText(frame, f"EAR R: {ear_r:.3f}", (pad, 70 + pad),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1, cv2.LINE_AA)
+    cv2.putText(frame, f"Blinks: {blink_count}", (pad, 95 + pad),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 1, cv2.LINE_AA)
 
-# Get video properties for writer
-frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-fps = int(cap.get(cv2.CAP_PROP_FPS)) or 24  # fallback to 24 if FPS is 0
+    color = (0, 0, 255) if state == "CLOSED" else (0, 255, 0)
+    cv2.putText(frame, f"Eyes: {state}", (w - 160, 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2, cv2.LINE_AA)
 
-# Set up video writer
-fourcc = cv2.VideoWriter_fourcc(*'XVID')
-out = cv2.VideoWriter(video_filename, fourcc, fps, (frame_width, frame_height))
+    cv2.putText(frame, region_desc, (pad, h - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200,200,200), 1, cv2.LINE_AA)
 
-amount_of_blinks = 0
-blinking = False
-blink_log = []
+def parse_args():
+    ap = argparse.ArgumentParser(description="Blink detection using MediaPipe Face Mesh from screen or webcam")
+    # Input selection
+    ap.add_argument("--input", choices=["screen", "webcam"], default="screen",
+                    help="Choose frame source: screen or webcam")
+    ap.add_argument("--camera-index", type=int, default=0,
+                    help="Webcam device index (for --input webcam)")
+    ap.add_argument("--flip", action="store_true",
+                    help="Flip webcam horizontally (mirror)")
 
-while True:
-    ret, frame = cap.read()
-    if not ret:
-        break
+    # Screen capture options
+    ap.add_argument("--monitor", type=int, default=1, help="Monitor index (1-based). Ignored if --region is set.")
+    ap.add_argument("--region", type=int, nargs=4, metavar=("X","Y","W","H"), default=[300, 300, 600, 600],
+                    help="Capture region (pixels). Overrides --monitor.")
 
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    rects = detector(gray, 0)
+    # Processing options
+    ap.add_argument("--scale", type=float, default=0.75,
+                    help="Downscale factor for processing speed (0.3–1.0)")
+    ap.add_argument("--ear-thresh", type=float, default=0.21,
+                    help="EAR threshold for eye closed")
+    ap.add_argument("--min-frames", type=int, default=1,
+                    help="Consecutive frames below threshold to count as a blink")
+    ap.add_argument("--max-faces", type=int, default=1,
+                    help="Number of faces to track (1 is fastest)")
+    return ap.parse_args()
 
-    current_time_ms = int(time.time() * 1000)
+def main():
+    args = parse_args()
 
-    for rect in rects:
-        shape = predictor(gray, rect)
-        shape = [(shape.part(i).x, shape.part(i).y) for i in range(68)]
+    # ---- Init frame source
+    cap = None
+    sct = None
+    region_desc = ""
 
-        leftEye = shape[lStart:lEnd]
-        rightEye = shape[rStart:rEnd]
+    if args.input == "webcam":
+        cap = cv2.VideoCapture(args.camera_index)
+        if not cap.isOpened():
+            raise RuntimeError(f"Could not open webcam at index {args.camera_index}")
+        region_desc = f"Webcam index {args.camera_index}"
+    else:
+        sct = mss()
+        if args.region:
+            x, y, w, h = args.region
+            monitor = {"left": x, "top": y, "width": w, "height": h}
+            region_desc = f"Region {x},{y},{w}x{h}"
+        else:
+            monitor_list = sct.monitors
+            idx = max(1, min(args.monitor, len(monitor_list)-1))
+            monitor = monitor_list[idx]
+            region_desc = f"Monitor {idx} {monitor['width']}x{monitor['height']}"
 
-        leftEAR = eye_aspect_ratio(leftEye)
-        rightEAR = eye_aspect_ratio(rightEye)
+    # ---- MediaPipe
+    mp_face_mesh = mp.solutions.face_mesh
+    face_mesh = mp_face_mesh.FaceMesh(
+        static_image_mode=False,
+        max_num_faces=args.max_faces,
+        refine_landmarks=True,
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.5,
+    )
 
-        ear = (leftEAR + rightEAR) / 2.0
+    blink_count = 0
+    closed_streak = 0
+    state = "OPEN"
+    is_closed_latched = False   # count once per closed period
 
-        if ear < EAR_THRESHOLD:
-            blinking = False
+    t_last = time.time()
+    fps_hist = deque(maxlen=30)
 
-        elif ear > EAR_THRESHOLD and not blinking:
-            amount_of_blinks += 1
-            print("Blink detected", amount_of_blinks)
-            blinking = True
-            blink_log.append({
-                "timestamp_ms": current_time_ms,
-                "blinking": True
-            })
+    window_title = f"Blink Detection ({'Webcam' if args.input=='webcam' else 'Screen Capture'} + MediaPipe)"
+    try:
+        while True:
+            # ---- Grab a frame
+            if args.input == "webcam":
+                ok, frame = cap.read()
+                if not ok:
+                    break
+                if args.flip:
+                    frame = cv2.flip(frame, 1)
+            else:
+                frame = cv2.cvtColor(np.array(sct.grab(monitor)), cv2.COLOR_BGRA2BGR)
 
-        status = "Eyes Open" if ear > EAR_THRESHOLD else "Eyes Closed"
-        cv2.putText(frame, status, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            # ---- Optionally downscale for processing
+            if 0.2 < args.scale < 1.0:
+                frame_small = cv2.resize(frame, None, fx=args.scale, fy=args.scale,
+                                         interpolation=cv2.INTER_AREA)
+            else:
+                frame_small = frame
 
-        time_text = f"Time: {current_time_ms} ms"
-        cv2.putText(frame, time_text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+            rgb = cv2.cvtColor(frame_small, cv2.COLOR_BGR2RGB)
+            res = face_mesh.process(rgb)
 
-    # Write the frame to video file
-    out.write(frame)
+            ear_l = ear_r = 0.0
+            if res.multi_face_landmarks:
+                face = res.multi_face_landmarks[0]
+                h, w = frame_small.shape[:2]
+                pts = np.array([(lm.x * w, lm.y * h) for lm in face.landmark], dtype=np.float32)
 
-    # Display the frame
-    cv2.imshow("Frame", imutils.resize(frame, width=450))
-    if cv2.waitKey(1) == 27:  # ESC key
-        break
+                ear_l = eye_aspect_ratio(pts, LEFT_EYE)
+                ear_r = eye_aspect_ratio(pts, RIGHT_EYE)
+                ear = (ear_l + ear_r) / 2.0
 
-# Cleanup
-cap.release()
-out.release()
-cv2.destroyAllWindows()
+                if ear < args.ear_thresh:
+                    closed_streak += 1
+                    if not is_closed_latched and closed_streak >= args.min_frames:
+                        blink_count += 1
+                        is_closed_latched = True
+                    state = "CLOSED"
+                else:
+                    closed_streak = 0
+                    is_closed_latched = False
+                    state = "OPEN"
+            else:
+                state = "OPEN"
+                closed_streak = 0
+                is_closed_latched = False
 
-# Save blink log
-with open(json_filename, "w") as f:
-    json.dump(blink_log, f, indent=2)
+            # ---- FPS
+            now = time.time()
+            fps = 1.0 / max(1e-6, (now - t_last))
+            t_last = now
+            fps_hist.append(fps)
+            smoothed_fps = sum(fps_hist) / len(fps_hist)
 
-print(f"Blink log saved to {json_filename}")
-print(f"Webcam footage saved to {video_filename}")
+            draw_overlay(frame, smoothed_fps, ear_l, ear_r, blink_count, state, region_desc)
+
+            cv2.imshow(window_title, frame)
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q') or key == 27:
+                break
+
+    finally:
+        face_mesh.close()
+        cv2.destroyAllWindows()
+        if cap is not None:
+            cap.release()
+
+if __name__ == "__main__":
+    main()
