@@ -1,1 +1,0 @@
-# Hopefully this will be able to read heart rate from on screen displays

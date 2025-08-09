@@ -1,6 +1,8 @@
 import argparse
 import time
 from collections import deque
+import json
+import os
 
 import cv2
 import numpy as np
@@ -80,6 +82,25 @@ def parse_args():
 def main():
     args = parse_args()
 
+    # ---- Prepare JSON logging
+    start_ts = int(time.time())
+    json_filename = f"{args.input}_{start_ts}.json"
+    json_path = os.path.abspath(json_filename)
+
+    log = {
+        "source": args.input,                # "webcam" or "screen"
+        "started_at": start_ts,              # UNIX seconds
+        "ear_threshold": float(args.ear_thresh),
+        "min_frames": int(args.min_frames),
+        "blinks": []                         # list of blink events
+    }
+
+    def write_log():
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(log, f, indent=2)
+
+    write_log()  # create the file immediately
+
     # ---- Init frame source
     cap = None
     sct = None
@@ -158,6 +179,16 @@ def main():
                     if not is_closed_latched and closed_streak >= args.min_frames:
                         blink_count += 1
                         is_closed_latched = True
+
+                        # ---- Log blink event
+                        event_ts = time.time()
+                        log["blinks"].append({
+                            "timestamp": event_ts,             # UNIX seconds
+                            "ear": float(ear),
+                            "ear_l": float(ear_l),
+                            "ear_r": float(ear_r)
+                        })
+                        write_log()
                     state = "CLOSED"
                 else:
                     closed_streak = 0
@@ -183,10 +214,13 @@ def main():
                 break
 
     finally:
+        # write once more on exit (in case nothing got logged yet)
+        write_log()
         face_mesh.close()
         cv2.destroyAllWindows()
         if cap is not None:
             cap.release()
+        print(f"Blink log saved to: {json_path}")
 
 if __name__ == "__main__":
     main()
