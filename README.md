@@ -1,6 +1,5 @@
 # Blink Detection
-Richard Lay-Flurrie
-University of Essex
+Richard Lay-Flurrie, University of Essex
 
 ## Introduction
 

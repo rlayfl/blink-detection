@@ -33,10 +33,12 @@ def eye_aspect_ratio(landmarks, eye_indices):
     vert = euclidean(p_v11, p_v12) + euclidean(p_v21, p_v22)
     return (vert / (2.0 * horiz)) if horiz > 1e-6 else 0.0
 
-def draw_overlay(frame, fps, ear_l, ear_r, blink_count, state, region_desc):
+# --- UPDATED: accept unix_time and show it on the overlay
+def draw_overlay(frame, fps, ear_l, ear_r, blink_count, state, region_desc, unix_time):
     h, w = frame.shape[:2]
     pad = 10
-    cv2.rectangle(frame, (pad-5, pad-5), (300, 125), (0, 0, 0), -1)
+    # increased height to fit the extra line for UNIX time
+    cv2.rectangle(frame, (pad-5, pad-5), (300, 150), (0, 0, 0), -1)
     cv2.putText(frame, f"FPS: {fps:.1f}", (pad, 20 + pad),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1, cv2.LINE_AA)
     cv2.putText(frame, f"EAR L: {ear_l:.3f}", (pad, 45 + pad),
@@ -45,6 +47,9 @@ def draw_overlay(frame, fps, ear_l, ear_r, blink_count, state, region_desc):
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1, cv2.LINE_AA)
     cv2.putText(frame, f"Blinks: {blink_count}", (pad, 95 + pad),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 1, cv2.LINE_AA)
+    # NEW: display UNIX time (seconds since epoch)
+    cv2.putText(frame, f"UNIX: {unix_time}", (pad, 120 + pad),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200,200,200), 1, cv2.LINE_AA)
 
     color = (0, 0, 255) if state == "CLOSED" else (0, 255, 0)
     cv2.putText(frame, f"Eyes: {state}", (w - 160, 30),
@@ -99,10 +104,11 @@ def main():
 
     log = {
         "source": args.input,                # "webcam" or "screen"
-        "started_at": safe_ts,               
+        "started_at": safe_ts,               # unix seconds at start
         "ear_threshold": float(args.ear_thresh),
         "min_frames": int(args.min_frames),
         "blinks": []                         # list of blink events
+        # "total_blinks" will be added on exit
     }
 
     def write_log():
@@ -217,7 +223,8 @@ def main():
 
             # ---- Draw + UI
             if not args.no_gui:
-                draw_overlay(frame, smoothed_fps, ear_l, ear_r, blink_count, state, region_desc)
+                current_unix = int(time.time())  # NEW: current UNIX time in seconds
+                draw_overlay(frame, smoothed_fps, ear_l, ear_r, blink_count, state, region_desc, current_unix)
                 cv2.imshow(window_title, frame)
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord('q') or key == 27:
@@ -226,7 +233,8 @@ def main():
                 # Headless: tiny sleep to avoid maxing CPU
                 time.sleep(0.001)
 
-    finally:
+    finally:        
+        log["total_blinks"] = int(blink_count)
         # write once more on exit (in case nothing got logged yet)
         write_log()
         face_mesh.close()
